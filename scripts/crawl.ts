@@ -231,6 +231,37 @@ function sanitizeSnapshotEntry(entry: SnapshotEntry): SnapshotEntry {
 }
 
 
+/* ── Intent price ── */
+
+// `price.currency` in the pinned validator accepts USD and USDC only, so an
+// intent priced in any other asset cannot declare it in `price` at all and
+// carries it in the manifest's `x-price` extension instead. Without the
+// fallback below those intents index as `price: null`, which reads the same as
+// an intent that names no price — the directory shows no price for a whole
+// settlement asset. `price` wins whenever it is present.
+//
+// The `price` branch is the long-standing one and is deliberately unchanged,
+// including its `|| 0` and `|| "USD"` defaults. The extension branch is
+// stricter because it is new: a non-finite or negative amount, or a missing
+// currency, yields null rather than an invented price of 0 USD.
+function readIntentPrice(intent: Record<string, unknown>): { amount: number; currency: string } | null {
+  if (intent.price && typeof intent.price === "object") {
+    const price = intent.price as Record<string, unknown>;
+    return {
+      amount: Number(price.amount) || 0,
+      currency: String(price.currency || "USD"),
+    };
+  }
+
+  const extension = intent["x-price"];
+  if (!extension || typeof extension !== "object" || Array.isArray(extension)) return null;
+  const price = extension as Record<string, unknown>;
+  const amount = Number(price.amount);
+  const currency = sanitize(price.currency, 16).toUpperCase();
+  if (!Number.isFinite(amount) || amount < 0 || !currency) return null;
+  return { amount, currency };
+}
+
 /* ── Extract metadata from manifest ── */
 
 function extractEntry(
@@ -284,13 +315,7 @@ function extractEntry(
     description: sanitize(i.description, 500),
     endpoint: typeof i.endpoint === "string" ? i.endpoint : undefined,
     method: typeof i.method === "string" ? i.method : undefined,
-    price:
-      i.price && typeof i.price === "object"
-        ? {
-            amount: Number((i.price as Record<string, unknown>).amount) || 0,
-            currency: String((i.price as Record<string, unknown>).currency || "USD"),
-          }
-        : null,
+    price: readIntentPrice(i),
   }));
 
   const claims = mergeClaims(existing?.claims || [], buildManifestClaims(manifest, firstSeen, lastCrawled));

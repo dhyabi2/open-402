@@ -70,7 +70,7 @@ test("provider-declared Nano metadata survives indexing without any verification
   assert.deepEqual(entry.protocols, ["x402"]);
   assert.deepEqual(entry.networks, ["nano:mainnet"]);
   assert.deepEqual(entry.assets, ["XNO"]);
-  assert.ok(entry.intents.every((intent) => intent.price === null));
+  assert.ok(entry.intents.every((intent) => intent.price?.currency === "XNO"));
 
   const records = seedAddressVerifications(entry.claims, new Map());
   const { claims, verification } = materializeEntryVerification(entry.claims, records, new Map());
@@ -85,6 +85,65 @@ test("provider-declared Nano metadata survives indexing without any verification
   assert.equal(stats.domains_with_verified_claims, 0);
   assert.equal(stats.verified_addresses, 0);
   assert.equal(stats.unsupported_claims, 1);
+});
+
+test("per-intent XNO prices declared in x-price reach the index", async () => {
+  const entry = await index(load());
+  const priced = Object.fromEntries(entry.intents.map((intent) => [intent.name, intent.price]));
+
+  // Every intent in this manifest prices in XNO, which `price` cannot carry.
+  assert.equal(entry.intents.length, 14);
+  assert.equal(entry.intents.filter((intent) => intent.price === null).length, 0);
+  assert.deepEqual(priced.extract_url, { amount: 0.0001, currency: "XNO" });
+  assert.deepEqual(priced.domain_intel, { amount: 0.0005, currency: "XNO" });
+
+  // A free intent prices at zero; it must not come back as "no price".
+  assert.deepEqual(priced.balance_topup, { amount: 0, currency: "XNO" });
+});
+
+test("a spec price wins over the x-price extension", async () => {
+  const manifest = load();
+  manifest.intents[0].price = { amount: 2, currency: "USDC" };
+  const [intent] = (await index(manifest)).intents;
+  assert.deepEqual(intent.price, { amount: 2, currency: "USDC" });
+});
+
+test("an unusable x-price indexes as no price rather than an invented one", async () => {
+  const cases: unknown[] = [
+    { amount: 0.0001 },                          // no currency
+    { amount: "free", currency: "XNO" },         // not a number
+    { amount: -0.0001, currency: "XNO" },        // negative
+    { amount: Infinity, currency: "XNO" },       // not finite
+    { amount: 0.0001, currency: "   " },         // blank currency
+    [{ amount: 0.0001, currency: "XNO" }],       // not an object
+    "0.0001 XNO",                                // not an object
+    null,
+  ];
+  for (const xPrice of cases) {
+    const manifest = load();
+    manifest.intents[0]["x-price"] = xPrice;
+    const [intent] = (await index(manifest)).intents;
+    assert.equal(intent.price, null, `x-price ${JSON.stringify(xPrice)} must not be indexed`);
+  }
+});
+
+test("x-price currency is sanitized and capped like every other manifest string", async () => {
+  const manifest = load();
+  manifest.intents[0]["x-price"] = { amount: 0.0001, currency: "<b>xno</b>" + "o".repeat(500) };
+  const [intent] = (await index(manifest)).intents;
+  assert.equal(intent.price.currency.length <= 16, true);
+  assert.equal(intent.price.currency.includes("<"), false);
+  assert.equal(intent.price.amount, 0.0001);
+});
+
+test("intents with neither price field, and USD prices, are indexed as before", async () => {
+  const manifest = load();
+  delete manifest.intents[0]["x-price"];
+  manifest.intents[1].price = { amount: 0.01, currency: "USD" };
+  delete manifest.intents[1]["x-price"];
+  const intents = (await index(manifest)).intents;
+  assert.equal(intents[0].price, null);
+  assert.deepEqual(intents[1].price, { amount: 0.01, currency: "USD" });
 });
 
 test("Nano manifest without a payout address fails validation and builds no claim", async () => {

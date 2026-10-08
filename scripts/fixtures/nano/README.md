@@ -27,5 +27,7 @@ provider-declared `x402` / `nano:mainnet` / `XNO` metadata is retained.
 - It does not standardise Nano as an HTTP payment protocol.
 - Per-intent XNO prices are carried in the provider's own `x-price` extension
   field, because `price.currency` in the validator accepts `USD` and `USDC`
-  only. The indexer does not read `x-price`, so indexed intents have
-  `price: null`.
+  only. The indexer reads `x-price` as a fallback when `price` is absent, so
+  these intents are indexed with their XNO price rather than `price: null`.
+  That is a provider-declared price like any other: it is not evidence that a
+  call was ever settled at it.
